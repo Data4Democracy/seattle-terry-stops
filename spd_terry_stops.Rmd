@@ -1,0 +1,422 @@
+---
+title: "SPD Terry Stops"
+author: "Emily Hawks"
+date: "October 4, 2017"
+output: html_document
+---
+
+# Summary
+
+The below report is an analysis of the publicly available Seattle Police Department Terry Stop data, downloaded on September 27, 2017.  
+
+This data set is refreshed daily, and is available here:
+https://data.seattle.gov/Public-Safety/Terry-Stops/28ny-9ts8
+
+Segments of this report include:
+
+- Profiling the data by the covariates available
+
+- Running t-tests to compare population proportions seen in this data with those observed in the general population (using Census data)
+
+- Running logistic regression models to determine what factors within the Terry Stop data are predictive of arrest 
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(rmarkdown)
+library(MatchIt)
+library(caret)
+library(scales)
+library(kableExtra)
+```
+
+
+```{r import, include = FALSE}
+raw <- read.csv("Terry_Stops.csv")
+
+# Make outcome flag binary 0/1
+
+spd.df <- raw %>%
+          mutate(Arrest = ifelse(ArrestFlag == "Y", 1, 0)) %>%
+          mutate(Frisk = ifelse(FriskFlag == "Y", 1, 0)) %>%
+          mutate(ArrestAndFrisk = ifelse(ArrestFlag == "Y", ifelse(FriskFlag == "Y", 1, 0),0))
+
+  
+
+```
+
+# Profiling the Covariates
+
+```{r summarize, echo = FALSE}
+# Summarize data
+
+# Terry Stops that Led to Arrest
+knitr::kable(spd.df %>% 
+             group_by(ArrestFlag) %>%
+             summarize(Terry_Stops = n_distinct(TERRY_STOP_ID)) %>%
+             mutate(Pct_of_TerryStops = percent(Terry_Stops/sum(Terry_Stops))),
+             caption = "Terry Stops that Led to Arrest",
+             align = 'r',
+             format = "html")  %>% 
+             kable_styling("striped", full_width = T)
+
+# Terry Stops that Led to Frisk
+knitr::kable(spd.df %>% 
+             group_by(FriskFlag) %>%
+             summarize(Terry_Stops = n_distinct(TERRY_STOP_ID)) %>%
+             mutate(Pct_of_TerryStops = percent(Terry_Stops/sum(Terry_Stops))),
+             caption = "Terry Stops that Led to Frisk",
+             align = 'r',
+             format = "html")  %>% 
+             kable_styling("striped", full_width = T)
+
+# Terry Stops that Led to Arrest and Frisk
+knitr::kable(spd.df %>% 
+             group_by(ArrestAndFrisk) %>%
+             summarize(Terry_Stops = n_distinct(TERRY_STOP_ID)) %>%
+             mutate(Pct_of_TerryStops = percent(Terry_Stops/sum(Terry_Stops))),
+             caption = "Terry Stops that Led to Arrest and Frisk",
+             align = 'r',
+             format = "html")  %>% 
+             kable_styling("striped", full_width = T)
+
+# Officers by Gender
+knitr::kable(spd.df %>% 
+             group_by(Officer_Gender) %>%
+             summarize(officers = n_distinct(OfficerID)) %>%
+             mutate(Percent_of_Total = percent(officers/sum(officers))),
+             caption = "Officers by Gender",
+             align = 'r',
+             format = "html")  %>% 
+             kable_styling("striped", full_width = T)
+
+# Officers by Race
+knitr::kable(spd.df %>% 
+             group_by(Officer_Race) %>%
+             summarize(officers = n_distinct(OfficerID)) %>%
+             mutate(Percent_of_Total = percent(officers/sum(officers))),
+             caption = "Officers by Race",
+             align = 'r',
+             format = "html")  %>% 
+             kable_styling("striped", full_width = T)
+
+# Officers by Race and Gender (% of Total by Gender)
+knitr::kable(spd.df %>% 
+             group_by(Officer_Gender, Officer_Race) %>%
+             summarize(officers = n_distinct(OfficerID)) %>%
+             mutate(Race_as_Percent_of_Gender = percent(officers/sum(officers))),
+             format = "html",
+             caption = "Officers by Race, Gender",
+             align = 'r') %>%
+             group_rows("Female Officer", 1, 6) %>%
+             group_rows("Male Officer", 7, 14) %>%
+             group_rows("Unknown", 15, 15)  %>% 
+             kable_styling("striped", full_width = T)
+
+# Terry Stops that led to arrests, by officer gender
+knitr::kable(spd.df %>% 
+             group_by(Officer_Gender, ArrestFlag) %>%
+             summarize(Terry_Stops = n_distinct(TERRY_STOP_ID)) %>%
+             mutate(Arrest_as_Pct_of_Officer_Gender_Total = percent(Terry_Stops/sum(Terry_Stops))),
+             caption = "Terry Stops that Led to Arrest by Officer Gender",
+             format = "html",
+             align = 'r') %>%
+             group_rows("Female Officer", 1, 2) %>%
+             group_rows("Male Officer", 3, 4) %>%
+             group_rows("Unknown", 5, 5)  %>% 
+             kable_styling("striped", full_width = T)
+
+# Terry Stops that led to arrests, by officer race
+knitr::kable(spd.df %>% 
+             group_by(Officer_Race, ArrestFlag) %>%
+             summarize(Terry_Stops = n_distinct(TERRY_STOP_ID)) %>%
+             mutate(Arrest_as_Percent_of_OfficerRace = percent(Terry_Stops/sum(Terry_Stops))),
+             caption = "Terry Stops that Led to Arrest by Officer Race",
+             format = "html",
+             align = 'r') %>%
+             group_rows(sort(unique(spd.df[,"Officer_Race"]))[1],1, 2) %>%
+             group_rows(sort(unique(spd.df[,"Officer_Race"]))[2], 3, 4) %>%
+             group_rows(sort(unique(spd.df[,"Officer_Race"]))[3], 5, 6) %>%
+             group_rows(sort(unique(spd.df[,"Officer_Race"]))[4], 7, 8) %>%
+             group_rows(sort(unique(spd.df[,"Officer_Race"]))[5], 9, 10) %>%
+             group_rows(sort(unique(spd.df[,"Officer_Race"]))[6], 11, 12) %>%
+             group_rows(sort(unique(spd.df[,"Officer_Race"]))[7], 13, 14) %>%
+             group_rows(sort(unique(spd.df[,"Officer_Race"]))[8], 15, 15) %>%
+             group_rows(sort(unique(spd.df[,"Officer_Race"]))[9], 16, 17)  %>% 
+             kable_styling("striped", full_width = T)
+
+
+# Subjects by Gender
+knitr::kable(spd.df %>% 
+             group_by(SubjectPerceivedGender) %>%
+             summarize(subjects = n()) %>%
+             mutate(Percent_of_Total = percent(subjects/sum(subjects))),
+             caption = "Subjects by Gender",
+             align = 'r',
+             format = "html")  %>% 
+             kable_styling("striped", full_width = T)
+
+# Subjects by Race
+knitr::kable(spd.df %>% 
+             group_by(SubjectPerceivedRace) %>%
+             summarize(subjects = n()) %>%
+             mutate(Percent_of_Total = percent(subjects/sum(subjects))),
+             caption = "Subjects by Race",
+             align = 'r',
+             format = "html")  %>% 
+             kable_styling("striped", full_width = T)
+
+# Subjects by Initial Call Type
+knitr::kable(spd.df %>% 
+             group_by(InitialCallType) %>%
+             summarize(subjects = n()) %>%
+             mutate(Percent_of_Total = percent(subjects/sum(subjects))),
+             caption = "Subjects by Initial Call Type",
+             align = 'r',
+             format = "html")  %>% 
+             kable_styling("striped", full_width = T)
+
+```
+
+```{r BinaryData, echo = FALSE}
+# Create a flag for people of color so we can include for analysis
+# Will need to exclude observations with null/unknown race attribute
+
+spd.df.poc <- spd.df %>%
+              filter(!grepl("Unknown",SubjectPerceivedRace)) %>%
+              filter(SubjectPerceivedRace != "-") %>%
+              mutate(is_AfricanAmerican = ifelse(SubjectPerceivedRace == "Black", 1, 0)) %>%
+              mutate(is_PersonOfColor = ifelse(SubjectPerceivedRace != "White", 1, 0)) %>%
+              mutate(Officer_is_AfricanAmerican = ifelse(Officer_Race == "Black", 1, 0)) %>%
+              mutate(Officer_is_PersonOfColor = ifelse(Officer_Race != "White", 1, 0)) %>%
+              mutate(subject_poc_offcr_nonpoc = ifelse(SubjectPerceivedRace != "White", 
+                                                       ifelse(Officer_Race == "White", 1, 0),0))
+  
+knitr::kable(spd.df.poc %>% 
+             group_by(SubjectPerceivedRace) %>%
+             summarize(subjects = n()) %>%
+             mutate(Percent_of_Total = percent(subjects/sum(subjects))),
+             caption = "Subjects by Race, excluding Unknown Records",
+             align = 'r',
+             format = "html")  %>% 
+             kable_styling("striped", full_width = T)
+
+knitr::kable(spd.df.poc %>% 
+             group_by(is_PersonOfColor) %>%
+             summarize(subjects = n()) %>%
+             mutate(Percent_of_Total = percent(subjects/sum(subjects))),
+             caption = "Subject is/is not a person of color, excluding Unknown Records",
+             align = 'r',
+             format = "html")  %>% 
+             kable_styling("striped", full_width = T)
+
+
+knitr::kable(spd.df.poc %>% 
+             group_by(is_AfricanAmerican) %>%
+             summarize(subjects = n()) %>%
+             mutate(Percent_of_Total = percent(subjects/sum(subjects))),
+             caption = "Subject is/is not African American, excluding Unknown Records",
+             align = 'r',
+             format = "html")  %>% 
+             kable_styling("striped", full_width = T)
+
+knitr::kable(spd.df.poc %>% 
+             group_by(is_PersonOfColor, Officer_is_PersonOfColor, ArrestFlag) %>%
+             summarize(subjects = n()) %>%
+             mutate(Percent_of_Total = percent(subjects/sum(subjects))),
+             caption = "Arrest Percentage by Subject is/is not POC and Officer is/is not POC",
+             format = "html",
+             align = 'r') %>%
+             group_rows("Subject White, Officer White", 1, 2) %>%
+             group_rows("Subject White, Officer POC", 3, 4) %>%
+             group_rows("Subject POC, Officer White", 5, 6)  %>% 
+             group_rows("Subject POC, Officer POC", 7, 8)  %>% 
+             kable_styling("striped", full_width = T)
+
+
+knitr::kable(spd.df.poc %>% 
+             filter(FriskFlag == "Y" | FriskFlag == "N") %>%
+             group_by(is_PersonOfColor, Officer_is_PersonOfColor, FriskFlag) %>%
+             summarize(subjects = n()) %>%
+             mutate(Percent_of_Total = percent(subjects/sum(subjects))),
+             caption = "Frisk Percentage by Subject is/is not POC and Officer is/is not POC, 
+                    excluding unknown records",
+             format = "html",
+             align = 'r') %>%
+             group_rows("Subject White, Officer White", 1, 2) %>%
+             group_rows("Subject White, Officer POC", 3, 4) %>%
+             group_rows("Subject POC, Officer White", 5, 6)  %>% 
+             group_rows("Subject POC, Officer POC", 7, 8)  %>% 
+             kable_styling("striped", full_width = T)
+
+```
+
+# T-Tests Comparing Race Proportions in Terry Stop data to Seattle Census data
+
+We want to run a T-Test to determine:
+
+1.  What is the probability the the percentage of persons of color subject to Terry Stops in Seattle is due to chance, assuming the Census data represents the true mean?
+
+2.  What is the probability that the percentage of African Americans subject to Terry Stops in Seattle is due to chance, assuming the census data represents the true mean?
+
+## Census Data
+
+Based on the 2010 United States Census, Seattle had a population of 608,660 with the following characteristics (some overlapping):
+
+  - White: 69.5 (non-Hispanic white: 66.3%)
+  
+  - Asian: 13.8%
+  
+  - Black: 7.9%
+  
+  - Hispanic/Latino: 9.0%
+  
+  - American Indian/Alaska Native: 0.8%
+  
+  - Native Hawaiian/Pacific Islander: 0.4%
+  
+  - Other: 2.4%
+  
+  - 2+ races: 5.1%
+  
+
+
+```{r, T-Test}
+
+# T Test - Proportion of Persons of Color in Terry Stop Data compared to Seattle census data
+t.test(x = spd.df.poc[,"is_PersonOfColor"], mu = .305, conf.level = 0.999)
+
+# T Test - Proportion of African-Americans in Terry Stop Data compared to Seattle census data
+t.test(x = spd.df.poc[,"is_AfricanAmerican"], mu = .079, conf.level = 0.999)
+```
+
+The T-tests demonstrate that there is virtually no chance that we would observe the population percentages of African Americans and people of color
+in the Terry Stop data due to chance alone, if we assume the populations are sampled randomly from the broader Seattle population.  
+There may be other confounding variables that unevenly impact one population's likelihood of being subjected to a Terry Stop as opposed to another.
+In this particular analysis, however, we assume no such confounding variables.
+
+
+```{r model, include = FALSE}
+# Prepare variables of interest for model
+spd.df <- spd.df %>%
+  mutate(OfficerAge = as.numeric(substr(spd.df[,"Reported_Date"],1,4)) - as.numeric(spd.df[,"Officer_YOB"])) %>%
+  mutate(OfficerAgeGroup = ifelse(OfficerAge <= 17,"1 - 17",
+                                  ifelse(OfficerAge <= 25, "18 - 25",
+                                         ifelse(OfficerAge <= 35, "26 - 35",
+                                                ifelse(OfficerAge <= 45, "36 - 45",
+                                                       ifelse(OfficerAge <= 55, "46 - 55", 
+                                                              ifelse(OfficerAge > 55, "56 and Above", "Error")))))))
+
+spd.dv <- spd.df[,c("SubjectAgeGroup", 
+                    "SubjectPerceivedRace",
+                    "SubjectPerceivedGender",
+                    "Officer_Gender",
+                    "Officer_Race",
+                    "OfficerAgeGroup", 
+                    "Precinct")]
+
+dmy <- dummyVars(" ~ .", data = spd.dv, fullRank = TRUE)
+spd.dmy <- data.frame(predict(dmy, newdata = spd.dv))
+remove(spd.dv)
+remove(dmy)
+spd.m1 <- bind_cols(spd.df[,c("TERRY_STOP_ID", "Arrest", "ArrestAndFrisk")], spd.dmy)
+
+# Note: this is just to create binary formats for EACH VARIABLE, with the intention that variables
+# will be analyzed in isolation (no multicollinearity)
+
+# See below for using contrasts to model categorical variables as non-binary
+
+```
+
+```{r model2, include = FALSE}
+# Explore different model constructions
+
+spd.sub <- spd.df[,c("SubjectAgeGroup", "SubjectPerceivedRace", "SubjectPerceivedGender", "Arrest")]
+# Verify contrasts
+contrasts(spd.df$SubjectAgeGroup)
+contrasts(spd.df$SubjectPerceivedGender)
+contrasts(spd.df$SubjectPerceivedRace)
+m1 <- glm(Arrest ~ ., family = binomial(link = "logit"), data = spd.sub)
+
+# Remove unknowns and model variables one by one
+m.a.race <- glm(Arrest ~ SubjectPerceivedRace, data = filter(spd.df[,c("SubjectPerceivedRace", "Arrest")], SubjectPerceivedRace != "-"))
+summary(m.a.race)
+
+# Consider simplified binary models only
+
+#fit the model without any predictor for each variable to establish baseline
+c_poc <- glm(is_PersonOfColor~1,data = spd.df.poc,family = binomial)
+summary(c_poc)$coeff
+
+c_aa <- glm(is_AfricanAmerican~1,data = spd.df.poc,family = binomial)
+summary(c_aa)$coeff
+
+c_arr <- glm(Arrest~1, data = spd.df.poc, family = binomial)
+summary(c_arr)$coeff
+
+c_arr_fr <- glm(ArrestAndFrisk~1, data = spd.df.poc, family = binomial)
+summary(c_arr_fr)$coeff
+
+m.a.poc <- glm(Arrest ~ is_PersonOfColor, family = binomial(link = "logit"), data = spd.df.poc)
+
+# Odds ratio of a person of color being arrested
+exp(m.a.poc$coefficients[2])
+
+# Binary regressions - Subject Focused
+m.a.poc <- glm(Arrest ~ is_PersonOfColor, family = binomial(link = "logit"), data = spd.df.poc)
+m.f.poc <- glm(Frisk ~ is_PersonOfColor, family = binomial(link = "logit"), 
+               data = spd.df.poc %>% filter(FriskFlag == "Y" | FriskFlag == "N"))
+m.af.poc <- glm(ArrestAndFrisk ~ is_PersonOfColor, family = binomial(link = "logit"), data = spd.df.poc)
+m.a.aa <- glm(Arrest ~ is_AfricanAmerican, family = binomial(link = "logit"), data = spd.df.poc)
+m.f.aa <- glm(Frisk ~ is_AfricanAmerican, family = binomial(link = "logit"), 
+              data = spd.df.poc %>% filter(FriskFlag == "Y" | FriskFlag == "N"))
+m.af.aa <- glm(ArrestAndFrisk ~ is_AfricanAmerican, family = binomial(link = "logit"), data = spd.df.poc)
+
+# Categorical regressions
+m.r <- glm(Arrest ~ Officer_Race + SubjectPerceivedRace, data = spd.df)
+m.r2 <- glm(Arrest ~ Officer_Race + SubjectPerceivedRace + Officer_Race*SubjectPerceivedRace, data = spd.df)
+
+# Binary regressions - Officer Focused
+m.oa.poc <- glm(Arrest ~ Officer_is_PersonOfColor, family = binomial(link = "logit"), data = spd.df.poc)
+m.oa.aa <- glm(Arrest ~ Officer_is_AfricanAmerican, family = binomial(link = "logit"), data = spd.df.poc)
+m.oa.sa <- glm(Arrest ~ Officer_is_PersonOfColor*is_PersonOfColor, family = binomial(link = "logit"), data = spd.df.poc)
+
+# Incidents involving subjects of color and white officers
+m.a.spoc.woff <- glm(Arrest ~ is_PersonOfColor, family = binomial(link = "logit"), data = filter(spd.df.poc, Officer_Race == "White"))
+m.f.spoc.woff <- glm(Frisk ~ is_PersonOfColor, family = binomial(link = "logit"), 
+                     data = spd.df.poc %>% filter(FriskFlag == "Y" | FriskFlag == "N") %>%
+                       filter(Officer_Race == "White"))
+
+```
+
+
+# Linear Regressions and Odds Ratios
+
+Lastly, we explore various linear regression models, including all available Terry Stop data as covariates.  Select statistically significant outputs are printed here.
+
+
+Note - an odds ratio is a measure of how strongly the presence or absence of Property A is associated with the presence or absence of Property B.  
+
+For example, if we want to look at the Odds Ratio of a person of color being arrested, we divide the odds of a person of color being arrested by the odds of a non-POC being arrested.
+
+$${Odds\:Ratio\:of\:Person\:of\:Color\:Being\:Arrested} = 
+\frac{\frac{Arrested\:and\: POC}{Not\:Arrested\:and\:POC}}{\frac{Arrested\:and\:White}{Not\:Arrested\:and\:White}}$$
+
+```{r, echo = FALSE}
+
+print_or <- function(model, outcomestring, varstring){
+  cat("The odds ratio of a Terry Stop leading to", outcomestring, "for a(n)", varstring, "is", exp(model$coefficients[2]), "\n")
+  cat("This means a(n)", varstring, "has odds of",outcomestring, percent(exp(model$coefficients[2])-1), "higher than a person who is not a(n)",varstring)
+}
+
+print_or(m.a.poc, "arrest", "Person of Color")
+print_or(m.a.aa, "arrest", "African American")
+print_or(m.f.poc, "frisk", "Person of Color")
+print_or(m.f.aa, "frisk", "African American")
+
+cat("Looking only at Terry Stops involving White officers, persons of color have", "\n", percent(exp(m.a.spoc.woff$coefficients[2])-1), "higher odds of arrest than a non-POC","\n", "and", percent(exp(m.f.spoc.woff$coefficients[2])-1), "higher odds of being frisked than a non-POC")
+
+
+```
+
